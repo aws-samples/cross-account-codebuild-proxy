@@ -1,0 +1,353 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+---
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Sample CloudFormation to deploy an example Lambda Proxy and Step Function for cross account CodeBuild workflows'
+Parameters:
+  crossAccountTargetRoleArn:
+    Description: Arn for the role to assume in the target account which hosts the CodeBuild project
+    Type: String
+    Default: "arn:aws:iam::<TargetAccountId>:role/proxy-lambda-codebuild-role"
+  targetCodeBuildProject:
+    Description: Name of the target CodeBuild project
+    Type: String
+    Default: "sample-codebuild-project"
+
+Resources:
+
+  ProxyLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/lambda/codebuild-proxy-lambda'
+      RetentionInDays: 30
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "The data stored in CloudWatch Logs is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
+
+
+  ProxyLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: codebuild-proxy-lambda-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: codebuild-proxy-lambda-inline-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt 'ProxyLambdaLogGroup.Arn'
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource:
+                  - !Ref crossAccountTargetRoleArn
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "This role has a static name to make the cross-account role assumption easier"
+
+
+  SampleStateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - !Sub "states.${AWS::Region}.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        - PolicyName: sample-statemachine-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt 'ProxyLambda.Arn'
+
+
+  ProxyLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: codebuild-proxy-lambda
+      Description: Proxy requests to CodeBuild in a remote account
+      Handler: index.lambda_handler
+      Runtime: python3.8
+      Role: !GetAtt 'ProxyLambdaRole.Arn'
+      Timeout: 10
+      MemorySize: 128
+      TracingConfig:
+        Mode: Active
+      Code:
+        ZipFile: |
+          # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+          # SPDX-License-Identifier: MIT-0
+          #
+          # Permission is hereby granted, free of charge, to any person obtaining a copy of this
+          # software and associated documentation files (the "Software"), to deal in the Software
+          # without restriction, including without limitation the rights to use, copy, modify,
+          # merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+          # permit persons to whom the Software is furnished to do so.
+          #
+          # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+          # INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+          # PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+          # HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+          # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+          # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+          import boto3
+          import logging
+          import sys
+          import traceback
+          import os
+          import json
+          from botocore.exceptions import ClientError
+
+          sts_client = boto3.client('sts')
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          def log_exception(exception_type, exception_value, exception_traceback):
+              """Function to create a JSON object containing exception details, which can then be logged as one line to the logger."""
+              traceback_string = traceback.format_exception(exception_type, exception_value, exception_traceback)
+              err_msg = json.dumps({"errorType": exception_type.__name__, "errorMessage": str(exception_value), "stackTrace": traceback_string})
+              logger.error(err_msg)
+
+          def assume_role(role_arn: str):
+              """Wrapper function to assume an IAM Role."""
+              try:
+                  logger.info(f"Assuming Role: {role_arn}")
+                  assumedRole = sts_client.assume_role(
+                      RoleArn=role_arn,
+                      RoleSessionName='cross_account_role'
+                  )
+              except:
+                  log_exception(*sys.exc_info())    
+                  raise RuntimeError(f"Could not assume role: {role_arn}")
+              return boto3.Session(
+                  aws_access_key_id=assumedRole['Credentials']['AccessKeyId'],
+                  aws_secret_access_key=assumedRole['Credentials']['SecretAccessKey'],
+                  aws_session_token=assumedRole['Credentials']['SessionToken'])
+
+
+          def start_codebuild_project(codebuild_session_object, codebuild_project, codebuild_envvars):
+              """Start CodeBuild Project with environment variable overrides"""
+              try:
+                  codebuild_response = codebuild_session_object.start_build(
+                                      projectName=codebuild_project,
+                                      environmentVariablesOverride=codebuild_envvars
+                                  )
+              except:
+                  log_exception(*sys.exc_info())    
+                  raise RuntimeError(f"Could not start CodeBuild Project: {codebuild_project}")
+
+              logger.info(f"Started CodeBuild Job: {codebuild_response['build']['id']}")
+              return {
+                  'codeBuildJobId': codebuild_response['build']['id']
+              }  
+
+          def check_codebuild_status(codebuild_session_object, codebuild_job_id):
+              """Check CodeBuild job status"""
+              try:
+                  codebuild_response = codebuild_session_object.batch_get_builds(
+                                          ids=[codebuild_job_id]
+                                      )
+              except:
+                  log_exception(*sys.exc_info())    
+                  raise RuntimeError(f"Exception checking job status: {codebuild_job_id}")
+              return {
+                  'jobStatus': codebuild_response['builds'][0]['buildStatus']
+              }
+
+          def start_build_handler(event):
+              """Handler for start CodeBuild workflow"""
+              if not event['roleArn']:
+                  raise Exception("Event did not include the roleArn")
+              if not event['codeBuildProject']:
+                  raise Exception("Event did not include the target CodeBuild Project")
+              if not event['environmentVariables']:
+                  event['environmentVariables'] = []
+
+              boto3_session = assume_role(event['roleArn'])
+              codebuild_client = boto3_session.client('codebuild')
+
+              codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'])
+
+              # append CodeBuild Job Id to the supplied event
+              event.update({"CodeBuildJobStatus": "IN_PROGRESS"})
+              event.update({"CodeBuildJobId": codebuild_start['codeBuildJobId']})
+              return event
+
+          def check_build_status_handler(event):
+              """Handler for checking CodeBuild job status"""
+              if not event['roleArn']:
+                  raise Exception("Event did not include the roleArn")
+              if not event['jobId']:
+                  raise Exception("Event did not include the CodeBuild ID to check")
+
+              boto3_session = assume_role(event['roleArn'])
+              codebuild_client = boto3_session.client('codebuild')
+
+              codebuild_status = check_codebuild_status(codebuild_client, event['jobId'])
+
+              # append CodeBuild Job Id to the supplied event
+              event.update({"CodeBuildJobStatus": codebuild_status['jobStatus']})
+              event.update({"CodeBuildJobId": event['jobId']})
+              return event
+
+          def lambda_handler(event, context):
+              if event['invocationType'] == "START_BUILD":
+                  return start_build_handler(event)
+              if event['invocationType'] == "CHECK_STATUS":
+                  return check_build_status_handler(event)
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "This lambda requires access to AWS Service Endpoints so deployment into a VPC can't be guaranteed to work"
+          - id: W92
+            reason: "Reserved Concurrency is not relevent nor desired for this function"
+
+
+  SampleStepFunction:
+    Type: 'AWS::StepFunctions::StateMachine'
+    Properties:
+      StateMachineName: sample-crossaccount-codebuild-state-machine
+      RoleArn: !GetAtt 'SampleStateMachineRole.Arn'
+      DefinitionString:
+        Fn::Sub: |-
+          {
+            "Comment": "A state machine that runs CodeBuild jobs in a different account",
+
+              "StartAt": "Lambda - CodeBuild Proxy - Start",
+              "States": {
+
+                  "Lambda - CodeBuild Proxy - Start": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "OutputPath": "$.Payload",
+                    "Parameters": {
+                      "FunctionName": "${ProxyLambda.Arn}",
+                      "Payload": {
+                        "invocationType": "START_BUILD",
+                        "roleArn": "${crossAccountTargetRoleArn}",
+                        "codeBuildProject": "${targetCodeBuildProject}",
+                        "environmentVariables": [
+                            {
+                              "name": "SAMPLE_VAR1",
+                              "value.$": "$.SampleValue1",
+                              "type": "PLAINTEXT"
+                            },
+                            {
+                              "name": "SAMPLE_VAR2",
+                              "value.$": "$.SampleValue2",
+                              "type": "PLAINTEXT"
+                            },
+                            {
+                              "name": "HARDCODED_VAR1",
+                              "value": "I am hardcoded",
+                              "type": "PLAINTEXT"
+                            }
+                        ],
+                        "OriginalPayload.$": "$"
+                      }
+                    },
+                    "Next": "Check CodeBuild Start Status"
+                  },
+                  "Check CodeBuild Start Status": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                          "Variable": "$.CodeBuildJobId",
+                          "IsPresent": true,
+                          "Next": "Wait Stage"
+                        }
+                    ],
+                    "Default": "Failed"
+                  },      
+                  "Wait Stage": {
+                      "Type": "Wait",
+                      "Seconds": 20,
+                      "Next": "Lambda - Check Job Status"
+                  },
+                  "Lambda - Check Job Status": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::lambda:invoke",
+                    "OutputPath": "$.Payload",
+                    "Parameters": {
+                      "FunctionName": "${ProxyLambda.Arn}",
+                      "Payload": {
+                        "invocationType": "CHECK_STATUS",
+                        "roleArn": "${crossAccountTargetRoleArn}",
+                        "jobId.$": "$.CodeBuildJobId",
+                        "OriginalPayload.$": "$.OriginalPayload"
+                      }
+                    },
+                    "Next": "Check Job Status"
+                  },      
+                  "Check Job Status": {
+                    "Type": "Choice",
+                    "Choices": [
+                        {
+                          "Variable": "$.CodeBuildJobStatus",
+                          "StringEquals": "SUCCEEDED",
+                          "Next": "Clean Output"
+                        },
+                        {
+                          "Variable": "$.CodeBuildJobStatus",
+                          "StringEquals": "IN_PROGRESS",
+                          "Next": "Wait Stage"
+                        }
+                    ],
+                    "Default": "Failed"
+                  },      
+                  "Clean Output": {
+                      "Type": "Pass",
+                      "OutputPath": "$.OriginalPayload",
+                      "Next": "Success"
+                  },      
+                  "Success": {
+                      "Type": "Succeed"
+                  },
+                  "Failed": {
+                      "Type": "Fail"
+                  }
+              }
+          }

@@ -1,0 +1,126 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of this
+# software and associated documentation files (the "Software"), to deal in the Software
+# without restriction, including without limitation the rights to use, copy, modify,
+# merge, publish, distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+# INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+---
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Sample CloudFormation for an example CodeBuild project for cross account testing'
+Parameters:
+  crossAccountSourceRoleArn:
+    Description: Arn of the proxy Lambda role 
+    Type: String
+    Default: "arn:aws:iam::<SourceAccountId>:role/codebuild-proxy-lambda-role"
+
+Resources:
+
+  CodeBuildRoleToAssume:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: proxy-lambda-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref crossAccountSourceRoleArn
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: proxy-lambda-codebuild-inline-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - !GetAtt 'SampleCodeBuildProject.Arn'
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W28
+            reason: "This role requires a static name so it may be assumed across account boundaries"
+
+  SampleCodeBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/codebuild/sample-codebuild-project'
+      RetentionInDays: 30
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "The data stored in CloudWatch Logs is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
+
+
+  SampleCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: codebuild-sample-inline-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt 'SampleCodeBuildLogGroup.Arn'
+
+  SampleCodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Description: Sample CodeBuild Project to demo cross-account Lambda Proxy
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        EnvironmentVariables:
+          - Name: SAMPLE_ENVIRONMENT_VARIABLE
+            Type: PLAINTEXT
+            Value: CHANGE_ME
+        Image: aws/codebuild/standard:4.0
+        Type: LINUX_CONTAINER
+      Name: sample-codebuild-project
+      ServiceRole: !GetAtt 'SampleCodeBuildRole.Arn'
+      Source:
+        BuildSpec: |
+          version: 0.2
+          phases:
+            build:
+              commands:
+                - env | tee env_vars.txt
+          artifacts:
+            files:
+              - env_vars.txt
+            name: sampleCodeBuild
+        Type: NO_SOURCE
+      TimeoutInMinutes: 5
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W32
+            reason: "The data stored in this CodeBuild project is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
