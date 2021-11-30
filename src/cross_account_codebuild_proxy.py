@@ -23,8 +23,8 @@ import json
 from botocore.exceptions import ClientError
 
 sts_client = boto3.client('sts')
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+LOGGER = logging.getLogger()
+LOGGER.setLevel(logging.INFO)
 
 def log_exception(exception_type, exception_value, exception_traceback):
     """
@@ -82,7 +82,7 @@ def start_codebuild_project(codebuild_session_object, codebuild_project: str, co
         log_exception(*sys.exc_info())    
         raise RuntimeError(f"Could not start CodeBuild Project: {codebuild_project}")
 
-    logger.info(f"Started CodeBuild Job: {codebuild_response['build']['id']}")
+    LOGGER.info(f"Started CodeBuild Job: {codebuild_response['build']['id']}")
     return {
         'codeBuildJobId': codebuild_response['build']['id']
     }  
