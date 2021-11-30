@@ -27,15 +27,27 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 def log_exception(exception_type, exception_value, exception_traceback):
-    """Function to create a JSON object containing exception details, which can then be logged as one line to the logger."""
+    """
+    Function to create a JSON object containing exception details, which can then be logged as one line to the LOGGER.
+    
+    Parameters:
+        exception_type
+        exception_value
+        exception_traceback
+    """
     traceback_string = traceback.format_exception(exception_type, exception_value, exception_traceback)
     err_msg = json.dumps({"errorType": exception_type.__name__, "errorMessage": str(exception_value), "stackTrace": traceback_string})
-    logger.error(err_msg)
+    LOGGER.error(err_msg)
 
 def assume_role(role_arn: str):
-    """Wrapper function to assume an IAM Role."""
+    """
+    Wrapper function to assume an IAM Role
+    
+    Parameters: 
+        role_arn (str): the ARN of the role to assume
+    """
     try:
-        logger.info(f"Assuming Role: {role_arn}")
+        LOGGER.info(f"Assuming Role: {role_arn}")
         assumedRole = sts_client.assume_role(
             RoleArn=role_arn,
             RoleSessionName='cross_account_role'
@@ -49,8 +61,18 @@ def assume_role(role_arn: str):
         aws_session_token=assumedRole['Credentials']['SessionToken'])
 
 
-def start_codebuild_project(codebuild_session_object, codebuild_project, codebuild_envvars):
-    """Start CodeBuild Project with environment variable overrides"""
+def start_codebuild_project(codebuild_session_object, codebuild_project: str, codebuild_envvars: list):
+    """
+    Start CodeBuild Project with environment variable overrides
+    
+    Parameters:
+        codebuild_session_object: boto3 session object
+        codebuild_project (str): The CodeBuild Project to start
+        codebuile_envvars (list): List of environment variables to override on the CodeBuild execution
+
+    Returns:
+        codeBuildJobId (str): The ID of the CodeBuild execution
+    """
     try:
         codebuild_response = codebuild_session_object.start_build(
                             projectName=codebuild_project,
@@ -66,7 +88,16 @@ def start_codebuild_project(codebuild_session_object, codebuild_project, codebui
     }  
 
 def check_codebuild_status(codebuild_session_object, codebuild_job_id):
-    """Check CodeBuild job status"""
+    """
+    Check the status of the supplied CodeBuild Job ID
+    
+    Parameters:
+        codebuild_session_object: boto3 session object
+        codebuild_job_id (str): the CodeBuild execution ID to check
+
+    Returns:
+        jobStatus (str): the execution buildStatus
+    """
     try:
         codebuild_response = codebuild_session_object.batch_get_builds(
                                 ids=[codebuild_job_id]
@@ -79,7 +110,15 @@ def check_codebuild_status(codebuild_session_object, codebuild_job_id):
     }
 
 def start_build_handler(event):
-    """Handler for start CodeBuild workflow"""
+    """
+    Function for start CodeBuild workflow
+
+    Parameters:
+        event (dict): the supplied Lambda event
+    
+    Returns: 
+        event (dict): the update event object
+    """
     if not event['roleArn']:
         raise Exception("Event did not include the roleArn")
     if not event['codeBuildProject']:
@@ -98,7 +137,15 @@ def start_build_handler(event):
     return event
 
 def check_build_status_handler(event):
-    """Handler for checking CodeBuild job status"""
+    """
+    Function to check the status of a CodeBuild Job ID
+
+    Parameters:
+        event (dict): the supplied Lambda event
+    
+    Returns: 
+        event (dict): the update event object
+    """
     if not event['roleArn']:
         raise Exception("Event did not include the roleArn")
     if not event['jobId']:
@@ -115,6 +162,13 @@ def check_build_status_handler(event):
     return event
 
 def lambda_handler(event, context):
+    """
+    Lambda entry point
+
+    Parameters:
+        event (dict)
+        context
+    """
     if event['invocationType'] == "START_BUILD":
         return start_build_handler(event)
     if event['invocationType'] == "CHECK_STATUS":
