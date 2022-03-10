@@ -40,7 +40,6 @@ Resources:
           - id: W84
             reason: "The data stored in CloudWatch Logs is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
 
-
   ProxyLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -76,7 +75,6 @@ Resources:
           - id: W28
             reason: "This role has a static name to make the cross-account role assumption easier"
 
-
   SampleStateMachineRole:
     Type: AWS::IAM::Role
     Properties:
@@ -100,7 +98,36 @@ Resources:
                   - lambda:InvokeFunction
                 Resource:
                   - !GetAtt 'ProxyLambda.Arn'
-
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource:
+                  - !GetAtt 'StateMachineLogGroup.Arn'
+              - Effect: Allow
+                Action:
+                  - logs:DescribeLogGroups
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: "*"
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W76
+            reason: "The use of wildcard resources is required"
+          - id: W11
+            reason: "Step Functions requires the ability to create/update log resource policies to enable CloudWatch Logging"
 
   ProxyLambda:
     Type: AWS::Lambda::Function
@@ -309,12 +336,31 @@ Resources:
           - id: W92
             reason: "Reserved Concurrency is not relevent nor desired for this function"
 
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: '/aws/stepfunction/sample-crossaccount-codebuild-state-machine'
+      RetentionInDays: 30
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: "The data stored in CloudWatch Logs is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
 
   SampleStepFunction:
     Type: 'AWS::StepFunctions::StateMachine'
     Properties:
       StateMachineName: sample-crossaccount-codebuild-state-machine
+      StateMachineType: STANDARD
       RoleArn: !GetAtt 'SampleStateMachineRole.Arn'
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup: 
+              LogGroupArn: !GetAtt 'StateMachineLogGroup.Arn'
+        IncludeExecutionData: True
+        Level: ALL
+      TracingConfiguration:
+        Enabled: True
       DefinitionString:
         Fn::Sub: |-
           {
