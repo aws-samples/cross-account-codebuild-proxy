@@ -1,0 +1,140 @@
+{
+  "Comment": "A state machine that runs CodeBuild jobs in a different account",
+  "StartAt": "codebuild-proxy-start-execution",
+  "States": {
+
+    "codebuild-proxy-start-execution": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "OutputPath": "$.Payload",
+        "Parameters": {
+            "FunctionName": "${ProxyLambda.Arn}",
+            "Payload": {
+            "invocationType": "START_BUILD",
+            "roleArn": "${crossAccountTargetRoleArn}",
+            "codeBuildProject": "${targetCodeBuildProject}",
+            "environmentVariables": [
+                {
+                    "name": "SAMPLE_VAR1",
+                    "value.$": "$.SampleValue1",
+                    "type": "PLAINTEXT"
+                },
+                {
+                    "name": "SAMPLE_VAR2",
+                    "value.$": "$.SampleValue2",
+                    "type": "PLAINTEXT"
+                },
+                {
+                    "name": "HARDCODED_VAR1",
+                    "value": "I am hardcoded",
+                    "type": "PLAINTEXT"
+                }
+            ],
+            "OriginalPayload.$": "$"
+            }
+        },
+        "Retry": [ {
+            "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+        } ],
+        "Catch": [ {
+            "ErrorEquals": [ "States.ALL" ],
+            "Next": "codebuild-proxy-start-failure",
+            "ResultPath": "$.RuntimeError"
+        } ],        
+        "Next": "check-codebuild-start-status"
+    },
+
+    "codebuild-proxy-start-failure": {
+        "Type": "Pass",
+        "Result": "Error calling the CodeBuild Proxy for job start",
+        "ResultPath": "$.FailureReason",
+        "Next": "Failed"
+    },    
+
+    "check-codebuild-start-status": {
+    "Type": "Choice",
+    "Choices": [
+        {
+            "Variable": "$.CodeBuildJobId",
+            "IsPresent": true,
+            "Next": "wait-for-codebuild-completion"
+        }
+    ],
+    "Default": "Failed"
+    },
+        
+    "wait-for-codebuild-completion": {
+        "Type": "Wait",
+        "Seconds": 20,
+        "Next": "codebuild-proxy-status-check"
+    },
+
+    "codebuild-proxy-status-check": {
+        "Type": "Task",
+        "Resource": "arn:aws:states:::lambda:invoke",
+        "OutputPath": "$.Payload",
+        "Parameters": {
+            "FunctionName": "${ProxyLambda.Arn}",
+            "Payload": {
+            "invocationType": "CHECK_STATUS",
+            "roleArn": "${crossAccountTargetRoleArn}",
+            "jobId.$": "$.CodeBuildJobId",
+            "OriginalPayload.$": "$.OriginalPayload"
+            }
+        },
+        "Retry": [ {
+            "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+            "IntervalSeconds": 2,
+            "MaxAttempts": 3,
+            "BackoffRate": 2
+        } ],
+        "Catch": [ {
+            "ErrorEquals": [ "States.ALL" ],
+            "Next": "codebuild-proxy-status-check-failure",
+            "ResultPath": "$.RuntimeError"
+        } ],  
+        "Next": "check-codebuild-job-status"
+    },
+
+    "codebuild-proxy-status-check-failure": {
+        "Type": "Pass",
+        "Result": "Error calling the CodeBuild Proxy for job status check",
+        "ResultPath": "$.FailureReason",
+        "Next": "Failed"
+    },  
+        
+    "check-codebuild-job-status": {
+        "Type": "Choice",
+        "Choices": [
+            {
+                "Variable": "$.CodeBuildJobStatus",
+                "StringEquals": "SUCCEEDED",
+                "Next": "clean-state-data"
+            },
+            {
+                "Variable": "$.CodeBuildJobStatus",
+                "StringEquals": "IN_PROGRESS",
+                "Next": "wait-for-codebuild-completion"
+            }
+        ],
+        "Default": "Failed"
+    },
+
+    "clean-state-data": {
+        "Type": "Pass",
+        "OutputPath": "$.OriginalPayload",
+        "Next": "Success"
+    },
+
+    "Success": {
+        "Type": "Succeed"
+    },
+
+    "Failed": {
+        "Type": "Fail"
+    }
+  }
+}

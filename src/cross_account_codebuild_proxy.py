@@ -14,53 +14,46 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 # SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-import boto3
+import boto3  # type: ignore
 import logging
 import sys
 import traceback
 import os
 import json
 from botocore.exceptions import ClientError
+from aws_lambda_powertools import Tracer # type: ignore
+from aws_lambda_powertools import Logger # type: ignore
 
 sts_client = boto3.client('sts')
-LOGGER = logging.getLogger()
-LOGGER.setLevel(logging.INFO)
+tracer = Tracer(service="cmp-update-external-id-orchestrator")
+logger = Logger(service="cmp-update-external-id-orchestrator")
 
-def log_exception(exception_type, exception_value, exception_traceback):
-    """
-    Function to create a JSON object containing exception details, which can then be logged as one line to the LOGGER.
-    
-    Parameters:
-        exception_type
-        exception_value
-        exception_traceback
-    """
-    traceback_string = traceback.format_exception(exception_type, exception_value, exception_traceback)
-    err_msg = json.dumps({"errorType": exception_type.__name__, "errorMessage": str(exception_value), "stackTrace": traceback_string})
-    LOGGER.error(err_msg)
-
+@tracer.capture_method
 def assume_role(role_arn: str):
     """
-    Wrapper function to assume an IAM Role
+    Function to assume an IAM Role
     
     Parameters: 
         role_arn (str): the ARN of the role to assume
+    
+    Returns:
+        boto3 session object
     """
     try:
-        LOGGER.info(f"Assuming Role: {role_arn}")
+        logger.info(f"Assuming Role: {role_arn}")
         assumedRole = sts_client.assume_role(
             RoleArn=role_arn,
             RoleSessionName='cross_account_role'
         )
     except:
-        log_exception(*sys.exc_info())    
+        logger.exception("Failed to assume role")  
         raise RuntimeError(f"Could not assume role: {role_arn}")
     return boto3.Session(
         aws_access_key_id=assumedRole['Credentials']['AccessKeyId'],
         aws_secret_access_key=assumedRole['Credentials']['SecretAccessKey'],
         aws_session_token=assumedRole['Credentials']['SessionToken'])
 
-
+@tracer.capture_method
 def start_codebuild_project(codebuild_session_object, codebuild_project: str, codebuild_envvars: list):
     """
     Start CodeBuild Project with environment variable overrides
@@ -79,14 +72,15 @@ def start_codebuild_project(codebuild_session_object, codebuild_project: str, co
                             environmentVariablesOverride=codebuild_envvars
                         )
     except:
-        log_exception(*sys.exc_info())    
+        logger.exception(f"Failed to start CodeBuild Project: {codebuild_project}")     
         raise RuntimeError(f"Could not start CodeBuild Project: {codebuild_project}")
 
-    LOGGER.info(f"Started CodeBuild Job: {codebuild_response['build']['id']}")
+    logger.info(f"Started CodeBuild Job: {codebuild_response['build']['id']}")
     return {
         'codeBuildJobId': codebuild_response['build']['id']
     }  
 
+@tracer.capture_method
 def check_codebuild_status(codebuild_session_object, codebuild_job_id):
     """
     Check the status of the supplied CodeBuild Job ID
@@ -96,19 +90,19 @@ def check_codebuild_status(codebuild_session_object, codebuild_job_id):
         codebuild_job_id (str): the CodeBuild execution ID to check
 
     Returns:
-        jobStatus (str): the execution buildStatus
+        job_status (str): the build status of the CodeBuild exection
     """
     try:
         codebuild_response = codebuild_session_object.batch_get_builds(
                                 ids=[codebuild_job_id]
                             )
     except:
-        log_exception(*sys.exc_info())    
+        logger.exception(f"Failed to check job status: {codebuild_job_id}") 
         raise RuntimeError(f"Exception checking job status: {codebuild_job_id}")
-    return {
-        'jobStatus': codebuild_response['builds'][0]['buildStatus']
-    }
+    job_status = codebuild_response['builds'][0]['buildStatus']
+    return job_status
 
+@tracer.capture_method
 def start_build_handler(event):
     """
     Function for start CodeBuild workflow
@@ -116,8 +110,8 @@ def start_build_handler(event):
     Parameters:
         event (dict): the supplied Lambda event
     
-    Returns: 
-        event (dict): the update event object
+    Returns:
+        event (dict): The Lambda event object
     """
     if not event['roleArn']:
         raise Exception("Event did not include the roleArn")
@@ -130,12 +124,14 @@ def start_build_handler(event):
     codebuild_client = boto3_session.client('codebuild')
 
     codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'])
+    logger.info(f"CodeBuild Job started successfully, ID: {codebuild_start['codeBuildJobId']}")
 
     # append CodeBuild Job Id to the supplied event
     event.update({"CodeBuildJobStatus": "IN_PROGRESS"})
     event.update({"CodeBuildJobId": codebuild_start['codeBuildJobId']})
     return event
 
+@tracer.capture_method
 def check_build_status_handler(event):
     """
     Function to check the status of a CodeBuild Job ID
@@ -143,8 +139,8 @@ def check_build_status_handler(event):
     Parameters:
         event (dict): the supplied Lambda event
     
-    Returns: 
-        event (dict): the update event object
+    Returns:
+        event (dict): The Lambda event object
     """
     if not event['roleArn']:
         raise Exception("Event did not include the roleArn")
@@ -155,21 +151,33 @@ def check_build_status_handler(event):
     codebuild_client = boto3_session.client('codebuild')
 
     codebuild_status = check_codebuild_status(codebuild_client, event['jobId'])
+    logger.info(f"CodeBuild Job Status: {codebuild_status}")
 
     # append CodeBuild Job Id to the supplied event
-    event.update({"CodeBuildJobStatus": codebuild_status['jobStatus']})
+    event.update({"CodeBuildJobStatus": codebuild_status})
     event.update({"CodeBuildJobId": event['jobId']})
     return event
 
+@tracer.capture_lambda_handler
+@logger.inject_lambda_context(log_event=True)
 def lambda_handler(event, context):
     """
-    Lambda entry point
+    Lambda handler for the remote CodeBuild Orchestration function
+
+    This Lambda provides an interface to execute a CodeBuild project in a remote account. This 
+    includes a method to start a CodeBuild project with Environment Variable overrides and a 
+    method to report on the status of a project execution.
 
     Parameters:
-        event (dict)
-        context
+        event (dict): The Lambda event object
+        context (dict): The Lambda context object   
+    
+    Returns:
+        event (dict): The updated event object
     """
     if event['invocationType'] == "START_BUILD":
+        logger.info("Starting CodeBuild Project")
         return start_build_handler(event)
     if event['invocationType'] == "CHECK_STATUS":
+        logger.info("Checking CodeBuild Job Status")
         return check_build_status_handler(event)
