@@ -63,7 +63,7 @@ Resources:
       cfn_nag:
         rules_to_suppress:
           - id: W84
-            reason: "The data stored in CloudWatch Logs is not sensitive and does not warrant the additional expense of creating and using a CMK to provide encryption"
+            reason: "The data stored in CloudWatch Logs does not contain sensitive information, using default protections provided by CloudWatch logs"
 
 
   SampleCodeBuildRole:
