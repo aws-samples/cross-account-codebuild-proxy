@@ -25,8 +25,8 @@ from aws_lambda_powertools import Tracer # type: ignore
 from aws_lambda_powertools import Logger # type: ignore
 
 sts_client = boto3.client('sts')
-tracer = Tracer(service="cmp-update-external-id-orchestrator")
-logger = Logger(service="cmp-update-external-id-orchestrator")
+tracer = Tracer(service="code-build-proxy")
+logger = Logger(service="code-build-proxy")
 
 @tracer.capture_method
 def assume_role(role_arn: str):
