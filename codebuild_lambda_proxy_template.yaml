@@ -218,8 +218,7 @@ Resources:
                                       projectName=codebuild_project,
                                       environmentVariablesOverride=codebuild_envvars
                                   )
-              except Exception as error:
-                  print(error)
+              except:
                   logger.exception(f"Failed to start CodeBuild Project: {codebuild_project}")     
                   raise RuntimeError(f"Could not start CodeBuild Project: {codebuild_project}")
 
@@ -270,8 +269,6 @@ Resources:
               arn = event['roleArn']
               region = event['region']
               project = event['codeBuildProject']
-              print(project)
-              print(type(project))
               boto3_session = assume_role(arn)
               codebuild_client = boto3_session.client('codebuild', region_name=region)
               codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'] )
@@ -314,9 +311,6 @@ Resources:
           @tracer.capture_lambda_handler
           @logger.inject_lambda_context(log_event=True)
           def lambda_handler(event, context):
-              print(event)
-              print("roleArn")
-              print(event['roleArn'])
               """
               Lambda handler for the remote CodeBuild Orchestration function
 
@@ -394,7 +388,23 @@ Resources:
                             "roleArn.$": "$.arn",
                             "codeBuildProject.$": "$.codeBuildProject",
                             "region.$": "$.region",
-                            "environmentVariables": [],
+                            "environmentVariables": [
+                            {
+                              "name": "SAMPLE_VAR1",
+                              "value.$": "$.SampleValue1",
+                              "type": "PLAINTEXT"
+                            },
+                            {
+                              "name": "SAMPLE_VAR2",
+                              "value.$": "$.SampleValue2",
+                              "type": "PLAINTEXT"
+                            },
+                            {
+                              "name": "HARDCODED_VAR1",
+                              "value": "I am hardcoded",
+                              "type": "PLAINTEXT"
+                            }
+                            ],
                             "OriginalPayload.$": "$"
                           }
                         },
