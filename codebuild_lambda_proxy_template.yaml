@@ -264,6 +264,8 @@ Resources:
                   raise Exception("Event did not include the roleArn")
               if not event['codeBuildProject']:
                   raise Exception("Event did not include the target CodeBuild Project")
+              if not event['region']:
+                  raise Exception("Event did not include the region for the target CodeBuild Project")
               if not event['environmentVariables']:
                   event['environmentVariables'] = []
               arn = event['roleArn']
@@ -294,6 +296,8 @@ Resources:
                   raise Exception("Event did not include the roleArn")
               if not event['jobId']:
                   raise Exception("Event did not include the CodeBuild ID to check")
+              if not event['region']:
+                  raise Exception("Event did not include the region for the target CodeBuild ID")
 
               arn = event['roleArn']
               region = event['region']
