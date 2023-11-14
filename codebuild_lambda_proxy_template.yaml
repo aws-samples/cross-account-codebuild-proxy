@@ -264,13 +264,16 @@ Resources:
                   raise Exception("Event did not include the roleArn")
               if not event['codeBuildProject']:
                   raise Exception("Event did not include the target CodeBuild Project")
+              if not event['region']:
+                  raise Exception("Event did not include the region for the target CodeBuild Project")
               if not event['environmentVariables']:
                   event['environmentVariables'] = []
-
-              boto3_session = assume_role(event['roleArn'])
-              codebuild_client = boto3_session.client('codebuild')
-
-              codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'])
+              arn = event['roleArn']
+              region = event['region']
+              project = event['codeBuildProject']
+              boto3_session = assume_role(arn)
+              codebuild_client = boto3_session.client('codebuild', region_name=region)
+              codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'] )
               logger.info(f"CodeBuild Job started successfully, ID: {codebuild_start['codeBuildJobId']}")
 
               # append CodeBuild Job Id to the supplied event
@@ -293,9 +296,13 @@ Resources:
                   raise Exception("Event did not include the roleArn")
               if not event['jobId']:
                   raise Exception("Event did not include the CodeBuild ID to check")
+              if not event['region']:
+                  raise Exception("Event did not include the region for the target CodeBuild ID")
 
-              boto3_session = assume_role(event['roleArn'])
-              codebuild_client = boto3_session.client('codebuild')
+              arn = event['roleArn']
+              region = event['region']
+              boto3_session = assume_role(arn)
+              codebuild_client = boto3_session.client('codebuild', region_name=region)
 
               codebuild_status = check_codebuild_status(codebuild_client, event['jobId'])
               logger.info(f"CodeBuild Job Status: {codebuild_status}")
@@ -362,144 +369,169 @@ Resources:
       TracingConfiguration:
         Enabled: True
       DefinitionString:
-        Fn::Sub: |-
-          {
-            "Comment": "A state machine that runs CodeBuild jobs in a different account",
-            "StartAt": "codebuild-proxy-start-execution",
-            "States": {
-
-              "codebuild-proxy-start-execution": {
-                  "Type": "Task",
-                  "Resource": "arn:aws:states:::lambda:invoke",
-                  "OutputPath": "$.Payload",
-                  "Parameters": {
-                      "FunctionName": "${ProxyLambda.Arn}",
-                      "Payload": {
-                      "invocationType": "START_BUILD",
-                      "roleArn": "${crossAccountTargetRoleArn}",
-                      "codeBuildProject": "${targetCodeBuildProject}",
-                      "environmentVariables": [
-                          {
+        Fn::Sub: 
+          - |-
+            {
+              "Comment": "A state machine that runs CodeBuild jobs in different regions",
+              "StartAt": "crossAccountTargetRoleArns",
+              "States": {
+                "crossAccountTargetRoleArns": {
+                  "Type": "Map",
+                  "MaxConcurrency": 1,
+                  "Iterator": {
+                    "StartAt": "codebuild-proxy-start-execution",
+                    "States": {
+                      "codebuild-proxy-start-execution": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "OutputPath": "$.Payload",
+                        "Parameters": {
+                          "FunctionName": "${lambdaArn}",
+                          "Payload": {
+                            "invocationType": "START_BUILD",
+                            "roleArn.$": "$.arn",
+                            "codeBuildProject.$": "$.codeBuildProject",
+                            "region.$": "$.region",
+                            "environmentVariables": [
+                            {
                               "name": "SAMPLE_VAR1",
                               "value.$": "$.SampleValue1",
                               "type": "PLAINTEXT"
-                          },
-                          {
+                            },
+                            {
                               "name": "SAMPLE_VAR2",
                               "value.$": "$.SampleValue2",
                               "type": "PLAINTEXT"
-                          },
-                          {
+                            },
+                            {
                               "name": "HARDCODED_VAR1",
                               "value": "I am hardcoded",
                               "type": "PLAINTEXT"
+                            }
+                            ],
+                            "OriginalPayload.$": "$"
                           }
-                      ],
-                      "OriginalPayload.$": "$"
-                      }
-                  },
-                  "Retry": [ {
-                      "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
-                      "IntervalSeconds": 2,
-                      "MaxAttempts": 3,
-                      "BackoffRate": 2
-                  } ],
-                  "Catch": [ {
-                      "ErrorEquals": [ "States.ALL" ],
-                      "Next": "codebuild-proxy-start-failure",
-                      "ResultPath": "$.RuntimeError"
-                  } ],        
-                  "Next": "check-codebuild-start-status"
-              },
-
-              "codebuild-proxy-start-failure": {
-                  "Type": "Pass",
-                  "Result": "Error calling the CodeBuild Proxy for job start",
-                  "ResultPath": "$.FailureReason",
-                  "Next": "Failed"
-              },    
-
-              "check-codebuild-start-status": {
-              "Type": "Choice",
-              "Choices": [
-                  {
-                      "Variable": "$.CodeBuildJobId",
-                      "IsPresent": true,
-                      "Next": "wait-for-codebuild-completion"
-                  }
-              ],
-              "Default": "Failed"
-              },
-                  
-              "wait-for-codebuild-completion": {
-                  "Type": "Wait",
-                  "Seconds": 20,
-                  "Next": "codebuild-proxy-status-check"
-              },
-
-              "codebuild-proxy-status-check": {
-                  "Type": "Task",
-                  "Resource": "arn:aws:states:::lambda:invoke",
-                  "OutputPath": "$.Payload",
-                  "Parameters": {
-                      "FunctionName": "${ProxyLambda.Arn}",
-                      "Payload": {
-                      "invocationType": "CHECK_STATUS",
-                      "roleArn": "${crossAccountTargetRoleArn}",
-                      "jobId.$": "$.CodeBuildJobId",
-                      "OriginalPayload.$": "$.OriginalPayload"
-                      }
-                  },
-                  "Retry": [ {
-                      "ErrorEquals": [ "Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
-                      "IntervalSeconds": 2,
-                      "MaxAttempts": 3,
-                      "BackoffRate": 2
-                  } ],
-                  "Catch": [ {
-                      "ErrorEquals": [ "States.ALL" ],
-                      "Next": "codebuild-proxy-status-check-failure",
-                      "ResultPath": "$.RuntimeError"
-                  } ],  
-                  "Next": "check-codebuild-job-status"
-              },
-
-              "codebuild-proxy-status-check-failure": {
-                  "Type": "Pass",
-                  "Result": "Error calling the CodeBuild Proxy for job status check",
-                  "ResultPath": "$.FailureReason",
-                  "Next": "Failed"
-              },  
-                  
-              "check-codebuild-job-status": {
-                  "Type": "Choice",
-                  "Choices": [
-                      {
-                          "Variable": "$.CodeBuildJobStatus",
-                          "StringEquals": "SUCCEEDED",
-                          "Next": "clean-state-data"
+                        },
+                        "Retry": [
+                          {
+                            "ErrorEquals": [
+                              "Lambda.ServiceException",
+                              "Lambda.AWSLambdaException",
+                              "Lambda.SdkClientException"
+                            ],
+                            "IntervalSeconds": 2,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 2
+                          }
+                        ],
+                        "Catch": [
+                          {
+                            "ErrorEquals": [
+                              "States.ALL"
+                            ],
+                            "Next": "codebuild-proxy-start-failure",
+                            "ResultPath": "$.RuntimeError"
+                          }
+                        ],
+                        "Next": "check-codebuild-start-status"
                       },
-                      {
-                          "Variable": "$.CodeBuildJobStatus",
-                          "StringEquals": "IN_PROGRESS",
-                          "Next": "wait-for-codebuild-completion"
+                      "codebuild-proxy-start-failure": {
+                        "Type": "Pass",
+                        "Result": "Error calling the CodeBuild Proxy for job start",
+                        "ResultPath": "$.FailureReason",
+                        "Next": "Failed"
+                      },
+                      "check-codebuild-start-status": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.CodeBuildJobId",
+                            "IsPresent": true,
+                            "Next": "wait-for-codebuild-completion"
+                          }
+                        ],
+                        "Default": "Failed"
+                      },
+                      "wait-for-codebuild-completion": {
+                        "Type": "Wait",
+                        "Seconds": 20,
+                        "Next": "codebuild-proxy-status-check"
+                      },
+                      "codebuild-proxy-status-check": {
+                        "Type": "Task",
+                        "Resource": "arn:aws:states:::lambda:invoke",
+                        "OutputPath": "$.Payload",
+                        "Parameters": {
+                          "FunctionName": "${lambdaArn}",
+                          "Payload": {
+                            "invocationType": "CHECK_STATUS",
+                            "roleArn.$": "$.roleArn",
+                            "jobId.$": "$.CodeBuildJobId",
+                            "region.$": "$.region",
+                            "OriginalPayload.$": "$.OriginalPayload"
+                          }
+                        },
+                        "Retry": [
+                          {
+                            "ErrorEquals": [
+                              "Lambda.ServiceException",
+                              "Lambda.AWSLambdaException",
+                              "Lambda.SdkClientException"
+                            ],
+                            "IntervalSeconds": 2,
+                            "MaxAttempts": 3,
+                            "BackoffRate": 2
+                          }
+                        ],
+                        "Catch": [
+                          {
+                            "ErrorEquals": [
+                              "States.ALL"
+                            ],
+                            "Next": "codebuild-proxy-status-check-failure",
+                            "ResultPath": "$.RuntimeError"
+                          }
+                        ],
+                        "Next": "check-codebuild-job-status"
+                      },
+                      "codebuild-proxy-status-check-failure": {
+                        "Type": "Pass",
+                        "Result": "Error calling the CodeBuild Proxy for job status check",
+                        "ResultPath": "$.FailureReason",
+                        "Next": "Failed"
+                      },
+                      "check-codebuild-job-status": {
+                        "Type": "Choice",
+                        "Choices": [
+                          {
+                            "Variable": "$.CodeBuildJobStatus",
+                            "StringEquals": "SUCCEEDED",
+                            "Next": "clean-state-data"
+                          },
+                          {
+                            "Variable": "$.CodeBuildJobStatus",
+                            "StringEquals": "IN_PROGRESS",
+                            "Next": "wait-for-codebuild-completion"
+                          }
+                        ],
+                        "Default": "Failed"
+                      },
+                      "clean-state-data": {
+                        "Type": "Pass",
+                        "OutputPath": "$.OriginalPayload",
+                        "Next": "Success"
+                      },
+                      "Success": {
+                        "Type": "Succeed"
+                      },
+                      "Failed": {
+                        "Type": "Fail"
                       }
-                  ],
-                  "Default": "Failed"
-              },
-
-              "clean-state-data": {
-                  "Type": "Pass",
-                  "OutputPath": "$.OriginalPayload",
-                  "Next": "Success"
-              },
-
-              "Success": {
-                  "Type": "Succeed"
-              },
-
-              "Failed": {
-                  "Type": "Fail"
+                    }
+                  },
+                  "End": true,
+                  "InputPath": "$.crossAccountTargetRoleArns"
+                }
               }
             }
-          }
+          - {lambdaArn: !GetAtt [ ProxyLambda, Arn ]} 
