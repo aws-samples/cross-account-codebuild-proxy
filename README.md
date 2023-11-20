@@ -10,13 +10,13 @@ This sample code provides an example of how AWS CodeBuild projects can be orches
 
 The included AWS Lambda function provides a method to start AWS CodeBuild projects, along with a method to check the status of a particular AWS CodeBuild execution ID.
 
-This may be combined with the sample AWS Step Function state machine to implement a workflow which starts an AWS CodeBuild project in a remote account with environment variable overrides, before regularly polling the execution status and capturing the final result. 
+This may be combined with the sample AWS Step Function state machine to implement a workflow which starts AWS CodeBuild projects in a remote accounts with environment variable overrides, before regularly polling the execution status and capturing the final result. 
 
 ### Solution Architecture
 
 The solution architecture is shown below:
 
-![Solution Architecture](docs/Solution-Architecture-Diagram.png)
+![Solution Architecture](docs/architecture-diagram.drawio.png)
 
 The solution is delivered via two AWS CloudFormation templates. 
 
@@ -30,23 +30,23 @@ The second template *sample_target_codebuild_template.yaml* will deploy a sample
 { 
     "crossAccountTargetRoleArns": [ 
         { 
-            "arn": "arn:aws:iam::111111111:role/role-name", 
+            "arn": "arn:aws:iam::111111111:role/proxy-lambda-codebuild-role", 
             "region": "eu-central-1", 
-            "codeBuildProject": "project1", 
+            "codeBuildProject": "sample-codebuild-project", 
             "SampleValue1": "Value1", 
             "SampleValue2": "Value2" 
         }, 
         { 
-            "arn": "arn:aws:iam::111111111:role/role-name", 
+            "arn": "arn:aws:iam::111111111:role/proxy-lambda-codebuild-role", 
             "region": "us-east-1", 
-            "codeBuildProject": "project2", 
+            "codeBuildProject": "sample-codebuild-project", 
             "SampleValue1": "Value1", 
             "SampleValue2": "Value2" 
         }, 
         { 
-            "arn": "arn:aws:iam::111111111:role/role-name", 
+            "arn": "arn:aws:iam::111111111:role/proxy-lambda-codebuild-role", 
             "region": "ap-south-1", 
-            "codeBuildProject": "Project3", 
+            "codeBuildProject": "sample-codebuild-project", 
             "SampleValue1": "Value1", 
             "SampleValue2": "Value2" 
         } 
