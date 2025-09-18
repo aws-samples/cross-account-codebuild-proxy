@@ -82,6 +82,7 @@
             "invocationType": "CHECK_STATUS",
             "roleArn": "${crossAccountTargetRoleArn}",
             "jobId.$": "$.CodeBuildJobId",
+            "region": "${AWS::Region}",
             "OriginalPayload.$": "$.OriginalPayload"
             }
         },

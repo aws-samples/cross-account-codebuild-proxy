@@ -135,14 +135,14 @@ Resources:
       FunctionName: codebuild-proxy-lambda
       Description: Proxy requests to CodeBuild in a remote account
       Handler: index.lambda_handler
-      Runtime: python3.12
+      Runtime: python3.13
       Role: !GetAtt 'ProxyLambdaRole.Arn'
       Timeout: 10
       MemorySize: 128
       TracingConfig:
         Mode: Active
       Layers:
-        - !Sub "arn:aws:lambda:${AWS::Region}:017000801446:layer:AWSLambdaPowertoolsPythonV2:73"
+        - !Sub "arn:aws:lambda:${AWS::Region}:017000801446:layer:AWSLambdaPowertoolsPythonV3-python313-x86_64:18"
       Code:
         ZipFile: |
           # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.

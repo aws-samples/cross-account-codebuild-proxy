@@ -117,11 +117,13 @@ def start_build_handler(event):
         raise Exception("Event did not include the roleArn")
     if not event['codeBuildProject']:
         raise Exception("Event did not include the target CodeBuild Project")
+    if not event['region']:
+        raise Exception("Event did not include the region for the target CodeBuild Project")
     if not event['environmentVariables']:
         event['environmentVariables'] = []
 
     boto3_session = assume_role(event['roleArn'])
-    codebuild_client = boto3_session.client('codebuild')
+    codebuild_client = boto3_session.client('codebuild', region_name=event['region'])
 
     codebuild_start = start_codebuild_project(codebuild_client, event['codeBuildProject'], event['environmentVariables'])
     logger.info(f"CodeBuild Job started successfully, ID: {codebuild_start['codeBuildJobId']}")
@@ -146,9 +148,11 @@ def check_build_status_handler(event):
         raise Exception("Event did not include the roleArn")
     if not event['jobId']:
         raise Exception("Event did not include the CodeBuild ID to check")
+    if not event['region']:
+        raise Exception("Event did not include the region for the target CodeBuild ID")
 
     boto3_session = assume_role(event['roleArn'])
-    codebuild_client = boto3_session.client('codebuild')
+    codebuild_client = boto3_session.client('codebuild', region_name=event['region'])
 
     codebuild_status = check_codebuild_status(codebuild_client, event['jobId'])
     logger.info(f"CodeBuild Job Status: {codebuild_status}")
